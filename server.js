@@ -37,24 +37,21 @@ app.post("/transcribe", async (req, res) => {
   if (!url) return res.status(400).json({ error: "Missing 'url' in request body" });
 
   try {
-    // Step 1: download audio-only
     await ytdlp(url, {
       output: "downloads/audio.%(ext)s",
       extractAudio: true,
       audioFormat: "wav",
     });
 
-    // Step 2: manually decode WAV into raw float audio (bypasses AudioContext)
     const buffer = fs.readFileSync("downloads/audio.wav");
     const wav = new WaveFile(buffer);
     wav.toBitDepth("32f");
     wav.toSampleRate(16000);
     let audioData = wav.getSamples();
     if (Array.isArray(audioData)) {
-      audioData = audioData[0]; // use first channel if stereo
+      audioData = audioData[0];
     }
 
-    // Step 3: load Whisper model (only once)
     if (!transcriber) {
       transcriber = await pipeline(
         "automatic-speech-recognition",
@@ -62,7 +59,6 @@ app.post("/transcribe", async (req, res) => {
       );
     }
 
-    // Step 4: transcribe the raw audio array directly
     const output = await transcriber(audioData, {
       return_timestamps: true,
       chunk_length_s: 30,
@@ -75,6 +71,25 @@ app.post("/transcribe", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Worker listening on port ${PORT}`);
-});
+app.post("/highlights", async (req, res) => {
+  const { transcript } = req.body;
+  if (!transcript || !transcript.chunks) {
+    return res.status(400).json({ error: "Missing 'transcript' with chunks in request body" });
+  }
+
+  try {
+    const keywords = [
+      "amazing", "crazy", "insane", "never", "secret", "best", "worst",
+      "wow", "actually", "literally", "important", "huge", "shocking",
+      "unbelievable", "wait", "listen", "truth", "mistake", "wrong",
+    ];
+
+    const scored = transcript.chunks.map((chunk) => {
+      const text = chunk.text.toLowerCase();
+      let score = 0;
+
+      keywords.forEach((word) => {
+        if (text.includes(word)) score += 2;
+      });
+
+      if (/[.!?]\s*$/.test(chunk.text.trim())) score
