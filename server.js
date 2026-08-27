@@ -1,6 +1,8 @@
 import express from "express";
 import ytdlp from "yt-dlp-exec";
 import { pipeline } from "@xenova/transformers";
+import fs from "fs";
+import { WaveFile } from "wavefile";
 
 const app = express();
 app.use(express.json());
@@ -34,14 +36,24 @@ app.post("/transcribe", async (req, res) => {
   if (!url) return res.status(400).json({ error: "Missing 'url' in request body" });
 
   try {
-    // Step 1: download audio-only (faster than full video)
-    const result = await ytdlp(url, {
+    // Step 1: download audio-only
+    await ytdlp(url, {
       output: "downloads/audio.%(ext)s",
       extractAudio: true,
       audioFormat: "wav",
     });
 
-    // Step 2: load the Whisper model (only happens once, first time)
+    // Step 2: manually decode WAV into raw float audio (bypasses AudioContext)
+    const buffer = fs.readFileSync("downloads/audio.wav");
+    const wav = new WaveFile(buffer);
+    wav.toBitDepth("32f");
+    wav.toSampleRate(16000);
+    let audioData = wav.getSamples();
+    if (Array.isArray(audioData)) {
+      audioData = audioData[0]; // use first channel if stereo
+    }
+
+    // Step 3: load Whisper model (only once)
     if (!transcriber) {
       transcriber = await pipeline(
         "automatic-speech-recognition",
@@ -49,8 +61,8 @@ app.post("/transcribe", async (req, res) => {
       );
     }
 
-    // Step 3: run transcription with timestamps
-    const output = await transcriber("downloads/audio.wav", {
+    // Step 4: transcribe the raw audio array directly
+    const output = await transcriber(audioData, {
       return_timestamps: true,
       chunk_length_s: 30,
     });
