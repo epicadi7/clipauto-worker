@@ -2,7 +2,8 @@ import express from "express";
 import ytdlp from "yt-dlp-exec";
 import { pipeline } from "@xenova/transformers";
 import fs from "fs";
-import { WaveFile } from "wavefile";
+import pkg from "wavefile";
+const { WaveFile } = pkg;
 
 const app = express();
 app.use(express.json());
