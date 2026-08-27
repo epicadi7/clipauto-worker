@@ -92,4 +92,42 @@ app.post("/highlights", async (req, res) => {
         if (text.includes(word)) score += 2;
       });
 
-      if (/[.!?]\s*$/.test(chunk.text.trim())) score
+      if (/[.!?]\s*$/.test(chunk.text.trim())) score += 1;
+
+      const wordCount = text.split(" ").length;
+      if (wordCount >= 8 && wordCount <= 40) score += 1;
+
+      if (text.includes("!")) score += 1;
+
+      return {
+        text: chunk.text,
+        start: chunk.timestamp[0],
+        end: chunk.timestamp[1],
+        score,
+      };
+    });
+
+    const sorted = [...scored].sort((a, b) => b.score - a.score);
+    const selected = [];
+    const minGapSeconds = 20;
+
+    for (const clip of sorted) {
+      const tooClose = selected.some(
+        (s) => Math.abs(s.start - clip.start) < minGapSeconds
+      );
+      if (!tooClose) selected.push(clip);
+      if (selected.length >= 5) break;
+    }
+
+    selected.sort((a, b) => a.start - b.start);
+
+    res.json({ success: true, highlights: selected });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Worker listening on port ${PORT}`);
+});
