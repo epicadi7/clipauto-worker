@@ -4,6 +4,11 @@ import { pipeline } from "@xenova/transformers";
 import fs from "fs";
 import pkg from "wavefile";
 const { WaveFile } = pkg;
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
+import { createClient } from "@supabase/supabase-js";
+
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 app.use(express.json());
@@ -11,6 +16,15 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 let transcriber = null;
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+if (!fs.existsSync("downloads")) {
+  fs.mkdirSync("downloads");
+}
 
 app.get("/", (req, res) => {
   res.send("ClipAuto worker is running");
@@ -124,6 +138,100 @@ app.post("/highlights", async (req, res) => {
     res.json({ success: true, highlights: selected });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function formatSrtTime(seconds) {
+  const date = new Date(0);
+  date.setSeconds(seconds);
+  const iso = date.toISOString();
+  const hh = iso.substring(11, 13);
+  const mm = iso.substring(14, 16);
+  const ss = iso.substring(17, 19);
+  const ms = iso.substring(20, 23);
+  return `${hh}:${mm}:${ss},${ms}`;
+}
+
+function cutAndCaption(inputPath, start, end, text, outputPath) {
+  return new Promise((resolve, reject) => {
+    const duration = end - start;
+    const srtPath = outputPath.replace(".mp4", ".srt");
+
+    const srtContent = `1\n${formatSrtTime(0)} --> ${formatSrtTime(duration)}\n${text}\n`;
+    fs.writeFileSync(srtPath, srtContent);
+
+    ffmpeg(inputPath)
+      .setStartTime(start)
+      .setDuration(duration)
+      .outputOptions([`-vf subtitles=${srtPath}`])
+      .output(outputPath)
+      .on("end", () => resolve(outputPath))
+      .on("error", (err) => reject(err))
+      .run();
+  });
+}
+
+app.post("/clip", async (req, res) => {
+  const { url, videoId, highlights } = req.body;
+  if (!url || !videoId || !highlights) {
+    return res.status(400).json({ error: "Missing 'url', 'videoId', or 'highlights' in request body" });
+  }
+
+  try {
+    const downloadResult = await ytdlp(url, {
+      output: "downloads/source.mp4",
+      format: "mp4",
+    });
+    const inputPath = "downloads/source.mp4";
+
+    const clips = [];
+
+    for (let i = 0; i < highlights.length; i++) {
+      const h = highlights[i];
+      const outputPath = `downloads/clip-${i}.mp4`;
+
+      await cutAndCaption(inputPath, h.start, h.end, h.text, outputPath);
+
+      const fileBuffer = fs.readFileSync(outputPath);
+      const storagePath = `${videoId}/clip-${i}.mp4`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("clips")
+        .upload(storagePath, fileBuffer, {
+          contentType: "video/mp4",
+          upsert: true,
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicUrlData } = supabase.storage
+        .from("clips")
+        .getPublicUrl(storagePath);
+
+      const { error: insertError } = await supabase.from("clips").insert({
+        video_id: videoId,
+        url: publicUrlData.publicUrl,
+        start_time: h.start,
+        end_time: h.end,
+      });
+
+      if (insertError) throw insertError;
+
+      clips.push({ url: publicUrlData.publicUrl, start: h.start, end: h.end });
+
+      fs.unlinkSync(outputPath);
+      fs.unlinkSync(outputPath.replace(".mp4", ".srt"));
+    }
+
+    fs.unlinkSync(inputPath);
+
+    await supabase.from("videos").update({ status: "done" }).eq("id", videoId);
+
+    res.json({ success: true, clips });
+  } catch (err) {
+    console.error(err);
+    await supabase.from("videos").update({ status: "error" }).eq("id", videoId);
     res.status(500).json({ error: err.message });
   }
 });
