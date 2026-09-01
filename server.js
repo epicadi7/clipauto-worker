@@ -28,10 +28,9 @@ if (!fs.existsSync("downloads")) {
   fs.mkdirSync("downloads");
 }
 
-// Shared flag that tells yt-dlp to pretend to be YouTube's Android app,
-// which often avoids the "Sign in to confirm you're not a bot" block.
-const ytdlpBotBypass = {
-  extractorArgs: "youtube:player_client=android",
+// Render mounts Secret Files at /etc/secrets/<filename>
+const ytdlpOptions = {
+  cookies: "/etc/secrets/cookies.txt",
 };
 
 app.get("/", (req, res) => {
@@ -46,7 +45,7 @@ app.post("/download", async (req, res) => {
     const output = await ytdlp(url, {
       output: "downloads/%(id)s.%(ext)s",
       format: "mp4",
-      ...ytdlpBotBypass,
+      ...ytdlpOptions,
     });
     res.json({ success: true, output });
   } catch (err) {
@@ -129,7 +128,7 @@ async function transcribeFromUrl(url) {
     output: "downloads/audio.%(ext)s",
     extractAudio: true,
     audioFormat: "wav",
-    ...ytdlpBotBypass,
+    ...ytdlpOptions,
   });
 
   const buffer = fs.readFileSync("downloads/audio.wav");
@@ -234,7 +233,7 @@ async function cutUploadAndSave(url, videoId, highlights) {
   await ytdlp(url, {
     output: "downloads/source.mp4",
     format: "mp4",
-    ...ytdlpBotBypass,
+    ...ytdlpOptions,
   });
   const inputPath = "downloads/source.mp4";
 
