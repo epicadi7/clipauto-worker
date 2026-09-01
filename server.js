@@ -28,6 +28,12 @@ if (!fs.existsSync("downloads")) {
   fs.mkdirSync("downloads");
 }
 
+// Shared flag that tells yt-dlp to pretend to be YouTube's Android app,
+// which often avoids the "Sign in to confirm you're not a bot" block.
+const ytdlpBotBypass = {
+  extractorArgs: "youtube:player_client=android",
+};
+
 app.get("/", (req, res) => {
   res.send("ClipAuto worker is running");
 });
@@ -40,6 +46,7 @@ app.post("/download", async (req, res) => {
     const output = await ytdlp(url, {
       output: "downloads/%(id)s.%(ext)s",
       format: "mp4",
+      ...ytdlpBotBypass,
     });
     res.json({ success: true, output });
   } catch (err) {
@@ -93,14 +100,12 @@ app.post("/clip", async (req, res) => {
   }
 });
 
-// NEW: chains transcribe -> highlights -> clip together in one call
 app.post("/process", async (req, res) => {
   const { url, videoId } = req.body;
   if (!url || !videoId) {
     return res.status(400).json({ error: "Missing 'url' or 'videoId' in request body" });
   }
 
-  // Respond right away so the dashboard isn't stuck waiting minutes for a reply.
   res.json({ success: true, message: "Processing started" });
 
   try {
@@ -124,6 +129,7 @@ async function transcribeFromUrl(url) {
     output: "downloads/audio.%(ext)s",
     extractAudio: true,
     audioFormat: "wav",
+    ...ytdlpBotBypass,
   });
 
   const buffer = fs.readFileSync("downloads/audio.wav");
@@ -228,6 +234,7 @@ async function cutUploadAndSave(url, videoId, highlights) {
   await ytdlp(url, {
     output: "downloads/source.mp4",
     format: "mp4",
+    ...ytdlpBotBypass,
   });
   const inputPath = "downloads/source.mp4";
 
