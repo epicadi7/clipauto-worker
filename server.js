@@ -11,6 +11,10 @@ import { createClient } from "@supabase/supabase-js";
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// Lets yt-dlp's child process find Deno, which is installed to this fixed
+// path by the Render Build Command (needed to solve YouTube's format challenge).
+process.env.PATH = `${process.env.PATH}:/opt/render/project/.deno/bin`;
+
 const app = express();
 app.use(cors());
 app.use(express.json());
