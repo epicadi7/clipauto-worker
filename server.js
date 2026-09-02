@@ -11,10 +11,6 @@ import { createClient } from "@supabase/supabase-js";
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-// Lets yt-dlp's child process find Deno, which is installed to this fixed
-// path by the Render Build Command (needed to solve YouTube's format challenge).
-process.env.PATH = `${process.env.PATH}:/opt/render/project/.deno/bin`;
-
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -32,8 +28,6 @@ if (!fs.existsSync("downloads")) {
   fs.mkdirSync("downloads");
 }
 
-// Render's Secret Files are mounted read-only, but yt-dlp needs to write
-// updated cookies back after using them — so copy it to a writable path first.
 const writableCookiesPath = "downloads/cookies.txt";
 if (fs.existsSync("/etc/secrets/cookies.txt")) {
   fs.copyFileSync("/etc/secrets/cookies.txt", writableCookiesPath);
@@ -46,6 +40,45 @@ const ytdlpOptions = {
 app.get("/", (req, res) => {
   res.send("ClipAuto worker is running");
 });
+
+// ---- NEW: process a video already uploaded to Supabase Storage ----
+app.post("/process-uploaded", async (req, res) => {
+  const { videoId, storagePath } = req.body;
+  if (!videoId || !storagePath) {
+    return res.status(400).json({ error: "Missing 'videoId' or 'storagePath'" });
+  }
+
+  res.json({ success: true, message: "Processing started" });
+
+  const inputPath = "downloads/source.mp4";
+
+  try {
+    await supabase.from("videos").update({ status: "processing" }).eq("id", videoId);
+
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from("videos")
+      .download(storagePath);
+    if (downloadError) throw downloadError;
+
+    const buffer = Buffer.from(await fileData.arrayBuffer());
+    fs.writeFileSync(inputPath, buffer);
+
+    const audioPath = "downloads/audio.wav";
+    await extractAudioFromFile(inputPath, audioPath);
+    const transcript = await transcribeFromAudioFile(audioPath);
+    const highlights = scoreHighlights(transcript);
+    await cutUploadAndSaveFromFile(inputPath, videoId, highlights);
+
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    await supabase.from("videos").update({ status: "done" }).eq("id", videoId);
+  } catch (err) {
+    console.error("process-uploaded failed:", err);
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    await supabase.from("videos").update({ status: "error" }).eq("id", videoId);
+  }
+});
+
+// ---- old yt-dlp based endpoints (kept as fallback) ----
 
 app.post("/download", async (req, res) => {
   const { url } = req.body;
@@ -133,15 +166,22 @@ app.post("/process", async (req, res) => {
 
 // ---- shared helper functions ----
 
-async function transcribeFromUrl(url) {
-  await ytdlp(url, {
-    output: "downloads/audio.%(ext)s",
-    extractAudio: true,
-    audioFormat: "wav",
-    ...ytdlpOptions,
+function extractAudioFromFile(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .noVideo()
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .format("wav")
+      .output(outputPath)
+      .on("end", () => resolve(outputPath))
+      .on("error", (err) => reject(err))
+      .run();
   });
+}
 
-  const buffer = fs.readFileSync("downloads/audio.wav");
+async function transcribeFromAudioFile(audioPath) {
+  const buffer = fs.readFileSync(audioPath);
   const wav = new WaveFile(buffer);
   wav.toBitDepth("32f");
   wav.toSampleRate(16000);
@@ -161,6 +201,16 @@ async function transcribeFromUrl(url) {
     return_timestamps: true,
     chunk_length_s: 30,
   });
+}
+
+async function transcribeFromUrl(url) {
+  await ytdlp(url, {
+    output: "downloads/audio.%(ext)s",
+    extractAudio: true,
+    audioFormat: "wav",
+    ...ytdlpOptions,
+  });
+  return transcribeFromAudioFile("downloads/audio.wav");
 }
 
 function scoreHighlights(transcript) {
@@ -239,14 +289,7 @@ function cutAndCaption(inputPath, start, end, text, outputPath) {
   });
 }
 
-async function cutUploadAndSave(url, videoId, highlights) {
-  await ytdlp(url, {
-    output: "downloads/source.mp4",
-    format: "best[ext=mp4]/best",
-    ...ytdlpOptions,
-  });
-  const inputPath = "downloads/source.mp4";
-
+async function cutUploadAndSaveFromFile(inputPath, videoId, highlights) {
   const clips = [];
 
   for (let i = 0; i < highlights.length; i++) {
@@ -286,6 +329,17 @@ async function cutUploadAndSave(url, videoId, highlights) {
     fs.unlinkSync(outputPath.replace(".mp4", ".srt"));
   }
 
+  return clips;
+}
+
+async function cutUploadAndSave(url, videoId, highlights) {
+  await ytdlp(url, {
+    output: "downloads/source.mp4",
+    format: "best[ext=mp4]/best",
+    ...ytdlpOptions,
+  });
+  const inputPath = "downloads/source.mp4";
+  const clips = await cutUploadAndSaveFromFile(inputPath, videoId, highlights);
   fs.unlinkSync(inputPath);
   return clips;
 }
