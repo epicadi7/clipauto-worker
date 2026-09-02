@@ -28,9 +28,15 @@ if (!fs.existsSync("downloads")) {
   fs.mkdirSync("downloads");
 }
 
-// Render mounts Secret Files at /etc/secrets/<filename>
+// Render's Secret Files are mounted read-only, but yt-dlp needs to write
+// updated cookies back after using them — so copy it to a writable path first.
+const writableCookiesPath = "downloads/cookies.txt";
+if (fs.existsSync("/etc/secrets/cookies.txt")) {
+  fs.copyFileSync("/etc/secrets/cookies.txt", writableCookiesPath);
+}
+
 const ytdlpOptions = {
-  cookies: "/etc/secrets/cookies.txt",
+  cookies: writableCookiesPath,
 };
 
 app.get("/", (req, res) => {
@@ -44,7 +50,7 @@ app.post("/download", async (req, res) => {
   try {
     const output = await ytdlp(url, {
       output: "downloads/%(id)s.%(ext)s",
-      format: "mp4",
+      format: "best[ext=mp4]/best",
       ...ytdlpOptions,
     });
     res.json({ success: true, output });
@@ -232,7 +238,7 @@ function cutAndCaption(inputPath, start, end, text, outputPath) {
 async function cutUploadAndSave(url, videoId, highlights) {
   await ytdlp(url, {
     output: "downloads/source.mp4",
-    format: "mp4",
+    format: "best[ext=mp4]/best",
     ...ytdlpOptions,
   });
   const inputPath = "downloads/source.mp4";
